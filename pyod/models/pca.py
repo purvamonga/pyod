@@ -113,7 +113,8 @@ class PCA(BaseDetector):
     weighted : bool, optional (default=True)
         If True, the eigenvalues are used in score computation.
         The eigenvectors with small eigenvalues comes with more importance
-        in outlier score calculation.
+        in outlier score calculation. Components with numerically zero
+        variance are excluded.
 
     standardization : bool, optional (default=True)
         If True, perform standardization first to convert
@@ -258,10 +259,20 @@ class PCA(BaseDetector):
         # Not all eigenvectors are used, only n_selected_components_ smallest
         # are used since they better reflect the variance change
 
-        self.selected_components_ = self.components_[
-                                    -1 * self.n_selected_components_:, :]
-        self.selected_w_components_ = self.w_components_[
-                                      -1 * self.n_selected_components_:]
+        # Weighted scores divide by the component variance, so drop
+        # numerically null components (constant/collinear features). Their
+        # variance is round-off noise: up to ~eps * max variance when the
+        # covariance is formed and eigendecomposed (accumulated over
+        # n_samples terms), hence the tolerance below on the variances.
+        n_valid = self.n_components_
+        if self.weighted:
+            var = self.detector_.explained_variance_
+            tol = var.max() * max(X.shape) * np.finfo(var.dtype).eps
+            n_valid = int(np.sum(var > tol))
+        start = max(n_valid - self.n_selected_components_, 0)
+
+        self.selected_components_ = self.components_[start:n_valid, :]
+        self.selected_w_components_ = self.w_components_[start:n_valid]
 
         self.decision_scores_ = np.sum(
             cdist(X, self.selected_components_) / self.selected_w_components_,

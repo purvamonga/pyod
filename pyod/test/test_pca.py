@@ -6,6 +6,7 @@ import sys
 import unittest
 
 # noinspection PyProtectedMember
+import numpy as np
 from numpy.testing import assert_allclose
 from numpy.testing import assert_array_less
 from numpy.testing import assert_equal
@@ -152,6 +153,64 @@ class TestPCA(unittest.TestCase):
         assert_allclose(rankdata(pred_ranks), rankdata(pred_socres), atol=3)
         assert_array_less(pred_ranks, 1.01)
         assert_array_less(-0.1, pred_ranks)
+
+    @staticmethod
+    def _degenerate_data(col):
+        rng = np.random.RandomState(0)
+        X = np.vstack([rng.rand(50, 3), rng.rand(5, 3) + 8.0])
+        X[:, 2] = col(X)
+        return X
+
+    def _check_valid(self, clf):
+        assert np.all(np.isfinite(clf.decision_scores_))
+        assert np.isfinite(clf.threshold_)
+        assert_equal(clf.labels_.sum(), 6)
+        assert_equal(len(clf.selected_w_components_), 2)
+
+    def test_constant_feature(self):
+        X = self._degenerate_data(lambda X: 0.0)
+        self._check_valid(PCA(contamination=0.1).fit(X))
+
+        # the null component must not change the other scores
+        full = PCA(standardization=False).fit(X)
+        reduced = PCA(standardization=False).fit(X[:, :2])
+        assert_allclose(full.decision_scores_, reduced.decision_scores_,
+                        rtol=1e-6)
+
+    def test_duplicate_feature(self):
+        X = self._degenerate_data(lambda X: X[:, 0])
+        self._check_valid(PCA(contamination=0.1).fit(X))
+
+    def test_near_zero_variance(self):
+        # positive variance (~1e-14) below the numerical-rank tolerance
+        noise = 1e-7 * np.random.RandomState(1).randn(55)
+        X = self._degenerate_data(lambda X: X[:, 0] + noise)
+        clf = PCA(contamination=0.1, standardization=False).fit(X)
+        assert clf.detector_.explained_variance_.min() > 0
+        self._check_valid(clf)
+
+    def test_rank_deficient_solvers(self):
+        X = self._degenerate_data(lambda X: X[:, 0] + X[:, 1])
+        for solver in ('auto', 'full', 'randomized'):
+            with self.subTest(svd_solver=solver):
+                clf = PCA(svd_solver=solver, random_state=0).fit(X)
+                self._check_valid(clf)
+
+    def test_all_constant(self):
+        # no variance: nothing is anomalous, and nothing is undefined
+        clf = PCA().fit(np.ones((55, 3)))
+        assert_equal(clf.decision_scores_, np.zeros(55))
+        assert np.isfinite(clf.threshold_)
+        assert_equal(clf.labels_, np.zeros(55))
+
+    def test_n_selected_components_rank_deficient(self):
+        X = self._degenerate_data(lambda X: 0.0)
+        clf = PCA(n_selected_components=1).fit(X)
+        assert_allclose(clf.selected_w_components_, clf.w_components_[1:2])
+
+    def test_full_rank_selection_unchanged(self):
+        clf = PCA(n_selected_components=3).fit(self.X_train)
+        assert_allclose(clf.selected_components_, clf.components_[-3:])
 
     def test_model_clone(self):
         clone_clf = clone(self.clf)
